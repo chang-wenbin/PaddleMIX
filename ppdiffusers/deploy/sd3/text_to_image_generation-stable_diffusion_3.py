@@ -11,9 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
 import argparse
+import os
+
 import paddle
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description=" Use PaddleMIX to accelerate the Stable Diffusion3 image generation model."
@@ -48,7 +51,7 @@ args = parse_args()
 
 if args.inference_optimize:
     os.environ["INFERENCE_OPTIMIZE"] = "True"
-    os.environ["INFERENCE_OPTIMIZE_TRITON"] = "True"
+    # os.environ["INFERENCE_OPTIMIZE_TRITON"] = "True"
 if args.inference_optimize_bp:
     os.environ["INFERENCE_OPTIMIZE_BP"] = "True"
 if args.dtype == "float32":
@@ -58,43 +61,46 @@ elif args.dtype == "float16":
 
 
 if args.inference_optimize_bp:
-    from paddle.distributed import fleet
-    from paddle.distributed.fleet.utils import recompute
-    import numpy as np
-    import random
+
     import paddle.distributed as dist
     import paddle.distributed.fleet as fleet
+
     strategy = fleet.DistributedStrategy()
     model_parallel_size = 2
     data_parallel_size = 1
-    strategy.hybrid_configs = {
-    "dp_degree": data_parallel_size,
-    "mp_degree": model_parallel_size,
-    "pp_degree": 1
-    }
+    strategy.hybrid_configs = {"dp_degree": data_parallel_size, "mp_degree": model_parallel_size, "pp_degree": 1}
     fleet.init(is_collective=True, strategy=strategy)
     hcg = fleet.get_hybrid_communicate_group()
     mp_id = hcg.get_model_parallel_rank()
     rank_id = dist.get_rank()
 
 import datetime
-from ppdiffusers import StableDiffusion3Pipeline
 
+from ppdiffusers import StableDiffusion3Pipeline
 
 pipe = StableDiffusion3Pipeline.from_pretrained(
     "stabilityai/stable-diffusion-3-medium-diffusers",
     paddle_dtype=inference_dtype,
 )
+paddle.device.cuda.empty_cache()
+# print("Loaded pipeline successfully!")
+# import time
+# time.sleep(20)
 
-pipe.transformer = paddle.incubate.jit.inference(
-    pipe.transformer,
-    save_model_dir="./tmp/sd3",
-    enable_new_ir=True,
-    cache_static_model=True,
-    # V100环境下，需设置exp_enable_use_cutlass=False,
-    exp_enable_use_cutlass=True,
-    delete_pass_lists=["add_norm_fuse_pass"],
-)
+# del pipe.transformer.simplified_sd3
+# paddle.device.cuda.empty_cache()
+# inference_global_mem = paddle.device.cuda.memory_reserved() / (1024**3)
+# print(f"Inference used CUDA memory : {inference_global_mem:.3f} GiB")
+os.environ["TRITON_KERNEL_CACHE_DIR"] = "./weight_only_8_test"
+
+# pipe.transformer = paddle.incubate.jit.inference(
+#     pipe.transformer,
+#     save_model_dir="./weight_only_8_test",
+#     enable_new_ir=False,
+#     cache_static_model=True,
+#     exp_enable_use_cutlass=True,
+#     delete_pass_lists=["add_norm_fuse_pass"],
+# )
 
 generator = paddle.Generator().manual_seed(42)
 prompt = "A cat holding a sign that says hello world"
@@ -107,6 +113,7 @@ image = pipe(
 if args.benchmark:
     # warmup
     for i in range(3):
+        # generator = paddle.Generator().manual_seed(42)
         image = pipe(
             prompt,
             num_inference_steps=args.num_inference_steps,
@@ -120,6 +127,7 @@ if args.benchmark:
     for i in range(repeat_times):
         paddle.device.synchronize()
         starttime = datetime.datetime.now()
+        # generator = paddle.Generator().manual_seed(42)
         image = pipe(
             prompt,
             num_inference_steps=args.num_inference_steps,
@@ -135,6 +143,10 @@ if args.benchmark:
         print("SD3 end to end time : ", duringtime, "ms")
 
     print("SD3 ave end to end time : ", sumtime / repeat_times, "ms")
+
+    paddle.device.cuda.empty_cache()
+    inference_global_mem = paddle.device.cuda.memory_reserved() / (1024**3)
+    print(f"Inference used CUDA memory : {inference_global_mem:.3f} GiB")
     cuda_mem_after_used = paddle.device.cuda.max_memory_allocated() / (1024**3)
     print(f"Max used CUDA memory : {cuda_mem_after_used:.3f} GiB")
 

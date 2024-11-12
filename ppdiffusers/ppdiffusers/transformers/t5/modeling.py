@@ -155,8 +155,9 @@ class T5DenseGatedActDense(nn.Layer):
                 config.d_ff, config.d_model, input_is_parallel=True, has_bias=False
             )
         else:
-            self.wi_0 = nn.Linear(config.d_model, config.d_ff, bias_attr=False)
-            self.wi_1 = nn.Linear(config.d_model, config.d_ff, bias_attr=False)
+            # breakpoint()
+            self.wi_0 = nn.Linear(config.d_model, config.d_ff, bias_attr=False, use_wint8=True)
+            self.wi_1 = nn.Linear(config.d_model, config.d_ff, bias_attr=False, use_wint8=True)
             self.wo = nn.Linear(config.d_ff, config.d_model, bias_attr=False)
         self.dropout = nn.Dropout(config.dropout_rate)
         self.act = ACT2FN[config.dense_act_fn]
@@ -233,10 +234,10 @@ class T5Attention(nn.Layer):
             self.inner_dim = self.inner_dim // config.tensor_parallel_degree
         else:
             # Mesh TensorFlow initialization to avoid scaling before softmax
-            self.q = nn.Linear(self.d_model, self.inner_dim, bias_attr=False)
-            self.k = nn.Linear(self.d_model, self.inner_dim, bias_attr=False)
-            self.v = nn.Linear(self.d_model, self.inner_dim, bias_attr=False)
-            self.o = nn.Linear(self.inner_dim, self.d_model, bias_attr=False)
+            self.q = nn.Linear(self.d_model, self.inner_dim, bias_attr=False, use_wint8=True)
+            self.k = nn.Linear(self.d_model, self.inner_dim, bias_attr=False, use_wint8=True)
+            self.v = nn.Linear(self.d_model, self.inner_dim, bias_attr=False, use_wint8=True)
+            self.o = nn.Linear(self.inner_dim, self.d_model, bias_attr=False, use_wint8=True)
 
         if self.has_relative_attention_bias:
             self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.n_heads)

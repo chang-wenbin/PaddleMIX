@@ -15,6 +15,8 @@
 import paddle
 import paddle.nn.functional as F
 from paddle import nn
+from paddle.nn import LayerList as LayerList
+from paddle.nn import Linear as Linear
 
 
 class SimplifiedSD3(nn.Layer):
@@ -24,21 +26,23 @@ class SimplifiedSD3(nn.Layer):
         self.dim = dim
 
         self.silu = nn.Silu()
-        self.linear1 = nn.LayerList([nn.Linear(self.dim, 6 * self.dim) for i in range(num_layers)])
-        self.linear_context = nn.LayerList(
-            [nn.Linear(self.dim, (6 if i < num_layers - 1 else 2) * self.dim) for i in range(num_layers)]
+        self.linear1 = LayerList([Linear(self.dim, 6 * self.dim, use_wint8=True) for i in range(num_layers)])
+        self.linear_context = LayerList(
+            [Linear(self.dim, (6 if i < num_layers - 1 else 2) * self.dim, use_wint8=True) for i in range(num_layers)]
         )
-
         self.norm_last_context = nn.LayerNorm(self.dim, epsilon=1e-6, weight_attr=False, bias_attr=True)
-
-        self.qkv = nn.LayerList([nn.Linear(self.dim, self.dim * 3) for i in range(num_layers)])
-        self.eqkv = nn.LayerList([nn.Linear(self.dim, self.dim * 3) for i in range(num_layers)])
-        self.to_out_linear = nn.LayerList([nn.Linear(self.dim, self.dim) for i in range(num_layers)])
-        self.to_add_out_linear = nn.LayerList([nn.Linear(self.dim, self.dim) for i in range(num_layers - 1)])
-        self.ffn1 = nn.LayerList([nn.Linear(self.dim, self.dim * 4) for i in range(num_layers)])
-        self.ffn2 = nn.LayerList([nn.Linear(self.dim * 4, self.dim) for i in range(num_layers)])
-        self.ffn1_context = nn.LayerList([nn.Linear(self.dim, self.dim * 4) for i in range(num_layers - 1)])
-        self.ffn2_context = nn.LayerList([nn.Linear(self.dim * 4, self.dim) for i in range(num_layers - 1)])
+        self.qkv = LayerList([Linear(self.dim, self.dim * 3, use_wint8=True) for i in range(num_layers)])
+        self.eqkv = LayerList([Linear(self.dim, self.dim * 3, use_wint8=True) for i in range(num_layers)])
+        self.to_out_linear = LayerList([Linear(self.dim, self.dim, use_wint8=True) for i in range(num_layers)])
+        self.to_add_out_linear = LayerList([Linear(self.dim, self.dim, use_wint8=True) for i in range(num_layers - 1)])
+        self.ffn1 = LayerList([Linear(self.dim, self.dim * 4, use_wint8=True) for i in range(num_layers)])
+        self.ffn2 = LayerList([Linear(self.dim * 4, self.dim, use_wint8=True) for i in range(num_layers)])
+        self.ffn1_context = LayerList([Linear(self.dim, self.dim * 4, use_wint8=True) for i in range(num_layers - 1)])
+        self.ffn2_context = LayerList([Linear(self.dim * 4, self.dim, use_wint8=True) for i in range(num_layers - 1)])
+        # linear1_weight = []
+        # linear1_scale = []
+        # for i in range(num_layers):
+        #     linear1_weight[i], linear1_scale[i] = weight_quantize(self.linear1[i].weight)
 
     def forward(self, hidden_states, encoder_hidden_states, temb):
         print("--------------------this is simplified_sd3------------------------")
@@ -59,6 +63,11 @@ class SimplifiedSD3(nn.Layer):
             context_pre_only = i == self.num_layers - 1
 
             emb = self.linear1[i](temb_silu)
+
+            # linear1_weight, linear1_scale = weight_quantize(self.linear1[i].weight)
+            # emb1 = weight_only_linear(temb_silu,linear1_weight,self.linear1[i].bias,linear1_scale)
+            # print(paddle.max(paddle.abs(emb-emb1)))
+
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb.chunk(6, axis=1)
 
             import paddlemix
@@ -119,9 +128,10 @@ class SimplifiedSD3(nn.Layer):
             #     norm_hidden_states1, num_or_sections=[1024, 154], axis=1
             # )
 
-            attn_output = paddle.nn.functional.linear(
-                attn_output, self.to_out_linear[i].weight, self.to_out_linear[i].bias
-            )
+            # attn_output = paddle.nn.functional.linear(
+            #     attn_output, self.to_out_linear[i].weight, self.to_out_linear[i].bias
+            # )
+            attn_output = self.to_out_linear[i](attn_output)
 
             if not context_pre_only:
                 context_attn_output = self.to_add_out_linear[i](context_attn_output)
@@ -157,4 +167,4 @@ class SimplifiedSD3(nn.Layer):
                 last_context_hidden_states = encoder_hidden_states
                 last_context_gate_mlp = c_gate_mlp
 
-        return  hidden_states
+        return hidden_states

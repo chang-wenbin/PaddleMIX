@@ -882,7 +882,7 @@ def fused_adaLN_scale_residual(
         )
 
     if in_dynamic_or_pir_mode():
-        print(f"== we are in dynamic mode, op_name: {op_name}")
+        # print(f"== we are in dynamic mode, op_name: {op_name}")
         outs = _C_ops._run_custom_op(
             op_name,
             x,
@@ -1304,7 +1304,7 @@ def rms_norm(x, weight=None, bias=None, epsilon=1e-05):
         )
 
     if in_dynamic_or_pir_mode():
-        print(f"== we are in dynamic mode, op_name: {op_name}")
+        # print(f"== we are in dynamic mode, op_name: {op_name}")
         outs = _C_ops._run_custom_op(op_name, x, weight, bias, epsilon)
         return outs[0]
     else:
@@ -1545,7 +1545,7 @@ def fused_rotary_emb(
         )
 
     if in_dynamic_or_pir_mode():
-        print(f"== we are in dynamic mode, op_name: {op_name}")
+        # print(f"== we are in dynamic mode, op_name: {op_name}")
         outs = _C_ops._run_custom_op(
             op_name,
             x,
@@ -1713,20 +1713,11 @@ def split_concat(x, y):
         grid = ("3", "batch", "seq_qkv + seq_eqkv")
         # -1 means this value does not matter for triton compilation
         split_concat_kernel[(op_name, grid)](
-            out0,
-            out1, 
-            out2, 
-            x, 
-            y,
-            -1, # batch,
-            seq_qkv, 
-            seq_eqkv, 
-            ouput_hidden, 
-            BLOCK_SIZE=BLOCK_SIZE
+            out0, out1, out2, x, y, -1, seq_qkv, seq_eqkv, ouput_hidden, BLOCK_SIZE=BLOCK_SIZE  # batch,
         )
 
     if in_dynamic_or_pir_mode():
-        print(f"== we are in dynamic mode, op_name: {op_name}")
+        # print(f"== we are in dynamic mode, op_name: {op_name}")
         outs = _C_ops._run_custom_op(
             op_name,
             x,
@@ -1857,7 +1848,7 @@ def triton_split(x, num_or_sections=[-1, -1], axis=1):
         )
 
     if in_dynamic_or_pir_mode():
-        print(f"== we are in dynamic mode, op_name: {op_name}")
+        # print(f"== we are in dynamic mode, op_name: {op_name}")
         outs = _C_ops._run_custom_op(
             op_name,
             x,
