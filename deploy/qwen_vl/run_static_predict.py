@@ -49,6 +49,18 @@ class Predictor(object):
 
         model_file = model_path + ".pdmodel"
         params_file = model_path + ".pdiparams"
+        
+        pd_version = paddle._version_
+        if pd_version >= '3.0.0' or pd_version == '0.0.0'：
+            if paddle.framework.use_pir_api():
+                model_file = model_path + ".json"
+            else:
+                model_file = model_path +".pdmodel"
+        else:
+            model_file = model_path +".pdmodel"
+        
+        
+        
         if not os.path.exists(model_file):
             raise ValueError("not find model file path {}".format(model_file))
         if not os.path.exists(params_file):
