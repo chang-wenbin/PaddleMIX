@@ -50,8 +50,8 @@ class Predictor(object):
         model_file = model_path + ".pdmodel"
         params_file = model_path + ".pdiparams"
         
-        pd_version = paddle._version_
-        if pd_version >= '3.0.0' or pd_version == '0.0.0'：
+        pd_version = paddle.__version__
+        if pd_version >= '3.0.0' or pd_version == '0.0.0':
             if paddle.framework.use_pir_api():
                 model_file = model_path + ".json"
             else:
@@ -68,6 +68,8 @@ class Predictor(object):
         config = paddle.inference.Config(model_file, params_file)
 
         config.switch_ir_optim(True)
+        config.delete_pass("remove_redundant_transpose_pass")
+    
 
         if self.args.device == "gpu":
             config.enable_use_gpu(100, 0)
