@@ -104,7 +104,7 @@ if args.benchmark:
     for _ in range(warm_up):
         # Inference: Generation of the output
         generated_ids = model.generate(**inputs, max_new_tokens=128)  # already trimmed in paddle
-    repeat_times = 10
+    repeat_times = 3
     sumtime = 0.0
     for i in range(repeat_times):
         paddle.device.synchronize()
@@ -143,7 +143,7 @@ if args.benchmark:
 else:
     # breakpoint()
     # Inference: Generation of the output
-    generated_ids = model.generate(**inputs, max_new_tokens=128)  # already trimmed in paddle
+    generated_ids = model.generate(**inputs, max_new_tokens=128,top_k=1,top_p=0)  # already trimmed in paddle
 
 output_text = processor.batch_decode(generated_ids[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
 print("output_text:\n", output_text[0])

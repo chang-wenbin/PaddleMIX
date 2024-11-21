@@ -22,7 +22,7 @@
 import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
-
+import nvtx
 import paddle
 import paddle.nn as nn
 import paddle.nn.functional as F
@@ -38,7 +38,7 @@ from ppdiffusers.utils import logging
 from ...activations import ACT2FN
 from .bert_padding import index_first_axis, pad_input, unpad_input
 from .configuration_qwen2_vl import Qwen2VLConfig, Qwen2VLVisionConfig
-
+from paddlemix.triton_ops.triton_ops import rms_norm
 logger = logging.get_logger(__name__)
 
 
@@ -282,7 +282,9 @@ class PatchEmbed(nn.Layer):
                 stride=self.proj._stride)
             hidden_states = hidden_states.to(target_dtype).reshape([-1, self.embed_dim])
         else:
-            hidden_states = self.proj(hidden_states.to(dtype=target_dtype)).reshape([-1, self.embed_dim])
+            # NOTE（changwenbin）: AttributeError: 'Variable' object has no attribute 'to'
+            # hidden_states = self.proj(hidden_states.to(dtype=target_dtype)).reshape([-1, self.embed_dim])
+            hidden_states = self.proj(paddle.cast(hidden_states,dtype=target_dtype)).reshape([-1, self.embed_dim])
         return hidden_states
 
 
@@ -485,6 +487,7 @@ class Qwen2RMSNorm(nn.Layer):
         if self.weight.dtype in [paddle.float16, paddle.bfloat16]:
             hidden_states = paddle.cast(hidden_states, self.weight.dtype)
         return hidden_states * self.weight
+        # hidden_states = rms_norm(hidden_states,weight=self.weight, epsilon=self.variance_epsilon)
 
 
 # Copied from transformers.models.qwen2.modeling_qwen2.Qwen2MLP
@@ -834,7 +837,15 @@ class Qwen2VLDecoderLayer(nn.Layer):
         self.mlp = Qwen2MLP(config)
         self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-
+        self.config = config
+    # @paddle.incubate.jit.inference(
+    # enable_new_ir=False,
+    # cache_static_model=False,
+    # save_model_dir="/root/paddlejob/workspace/env_run/output/changwenbin/PaddleMIX/paddlemix/examples/qwen2_vl/tmp/qwen2vl_model_decoder",
+    # exp_enable_use_cutlass=False,
+    # skip_prune_program=True,
+    # # delete_pass_lists=["fc_fuse_pass"],
+    # )
     def forward(
         self,
         hidden_states: paddle.Tensor,
@@ -867,7 +878,13 @@ class Qwen2VLDecoderLayer(nn.Layer):
 
         residual = hidden_states
 
+        # Note：(changwenbin) use triton_rmsnorm
         hidden_states = self.input_layernorm(hidden_states)
+        # print(self.input_layernorm.weight)
+        # print(self.input_layernorm.bias)
+        # exit(0)
+        # from paddlemix.triton_ops.triton_ops import rms_norm
+        # hidden_states = rms_norm(hidden_states,weight=self.input_layernorm.weight, epsilon=self.config.rms_norm_eps)
 
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -978,7 +995,14 @@ class Qwen2VisionTransformerPretrainedModel(Qwen2VLPreTrainedModel):
         rotary_pos_emb_full = self.rotary_pos_emb(max_grid_size)
         rotary_pos_emb = rotary_pos_emb_full[pos_ids].flatten(start_axis=1)
         return rotary_pos_emb
-
+    
+    # @paddle.incubate.jit.inference(
+    # enable_new_ir=False,
+    # cache_static_model=False,
+    # save_model_dir="/root/paddlejob/workspace/env_run/output/changwenbin/PaddleMIX/paddlemix/examples/qwen2_vl/tmp/qwen2vl_vision",
+    # exp_enable_use_cutlass=False,
+    # # delete_pass_lists=["fc_fuse_pass"],
+    # )
     def forward(self, hidden_states: paddle.Tensor, grid_thw: paddle.Tensor) -> paddle.Tensor:
         
         hidden_states = self.patch_embed(hidden_states)
@@ -1042,7 +1066,15 @@ class Qwen2VLModel(Qwen2VLPreTrainedModel):
         # Convert bool attention_mask to float attention mask, which will be added to attention_scores later
         expanded_attn_mask = paddle.where(expanded_attn_mask, 0.0, paddle.finfo(dtype).min).astype(dtype)
         return expanded_attn_mask
-
+    # @paddle.incubate.jit.inference(
+    # enable_new_ir=True,
+    # cache_static_model=False,
+    # save_model_dir="/root/paddlejob/workspace/env_run/output/changwenbin/PaddleMIX/paddlemix/examples/qwen2_vl/tmp/qwen2vl_model",
+    # exp_enable_use_cutlass=False,
+    # skip_prune_program=True,
+    # switch_ir_optim=False,
+    # # delete_pass_lists=["fc_fuse_pass"],
+    # )
     def forward(
         self,
         input_ids: paddle.Tensor = None,
@@ -1187,9 +1219,14 @@ class Qwen2LMHead(nn.Layer):
 
 
 class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel):
+    key_nvtx = nvtx.start_range(message="key", color="red")
+    
     _tied_weights_keys = ["lm_head.weight"]
+    
 
     def __init__(self, config):
+        init_nvtx = nvtx.start_range(message="init", color="red")
+        
         super().__init__(config)
         self.visual = Qwen2VisionTransformerPretrainedModel._from_config(config.vision_config)
         self.model = Qwen2VLModel(config)
@@ -1204,7 +1241,9 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel):
         # self.post_init()
 
         self.rope_deltas = 0  # TODO: hard code
-
+        
+        paddle.device.synchronize()
+        nvtx.end_range(init_nvtx)
     def get_input_embeddings(self):
         return self.model.embed_tokens
 
@@ -1450,11 +1489,16 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "The image shows a street scene with a red stop sign in the foreground. In the background, there is a large red gate with Chinese characters ..."
         ```"""
-
+        vision_nvtx = nvtx.start_range(message="vision", color="red")
+        
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states  # fmt:skip
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
+        # import datetime
+        # paddle.device.synchronize()
+        # starttime_visual = datetime.datetime.now()
+        
+                
         if inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
             if pixel_values is not None:
@@ -1471,7 +1515,20 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel):
                 inputs_embeds[video_mask] = video_embeds
             if attention_mask is not None:
                 attention_mask = attention_mask
+                
+        paddle.device.synchronize()
+        nvtx.end_range(vision_nvtx)
+        # paddle.device.synchronize()
+        # endtime_visual = datetime.datetime.now()
 
+        # duringtime_visual = endtime_visual - starttime_visual
+        # duringtime_visual = duringtime_visual.seconds * 1000 + duringtime_visual.microseconds / 1000.0
+        # print("duringtime_visual",duringtime_visual)
+
+        # paddle.device.synchronize()
+        # starttime_text = datetime.datetime.now()
+        text_nvtx = nvtx.start_range(message="text", color="yellow")
+        
         outputs = self.model(
             input_ids=None,
             position_ids=position_ids,
@@ -1483,11 +1540,26 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+        
+        paddle.device.synchronize()
+        nvtx.end_range(text_nvtx)
+        # paddle.device.synchronize()
+        # endtime_text = datetime.datetime.now()
+
+        # duringtime_text = endtime_text - starttime_text
+        # duringtime_text = duringtime_text.seconds * 1000 + duringtime_text.microseconds / 1000.0
+        # print("duringtime_text",duringtime_text)
+
+        head_nvtx = nvtx.start_range(message="head", color="blue")
 
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
         logits = paddle.cast(logits, "float32")
+        
+        paddle.device.synchronize()
+        nvtx.end_range(head_nvtx)
 
+        end_nvtx = nvtx.start_range(message="end", color="black")
         loss = None
         if labels is not None:
             # Shift so that tokens < n predict n
@@ -1501,13 +1573,20 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel):
             loss = loss_fct(shift_logits, shift_labels)
             label_sum = paddle.sum(shift_labels != -100).cast("float32")
             loss = loss / label_sum
+        paddle.device.synchronize()
+        nvtx.end_range(end_nvtx)
 
         if not return_dict:
-            output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
+            and_nvtx = nvtx.start_range(message="and", color="pink")
+            output = (logits,) + tuple(outputs[1:])
+            paddle.device.synchronize()
+            returns = (loss,) + output if loss is not None else output
+            nvtx.end_range(and_nvtx)
+            
+            return returns
             # return logits + 28 layers k and v
-
-        return Qwen2VLCausalLMOutputWithPast(
+        returnend_nvtx = nvtx.start_range(message="returnend", color="pink")
+        returnend = Qwen2VLCausalLMOutputWithPast(
             loss=loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
@@ -1515,6 +1594,10 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel):
             attentions=outputs.attentions,
             rope_deltas=rope_deltas,
         )
+        paddle.device.synchronize()
+        nvtx.end_range(returnend_nvtx)
+        
+        return returnend
 
     def prepare_inputs_for_generation(
         self,
@@ -1534,12 +1617,15 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel):
         # If we have cache: let's slice `input_ids` through `cache_position`, to keep only the unprocessed tokens
         # Exception 1: when passing input_embeds, input_ids may be missing entries
         # Exception 2: some generation methods do special slicing of input_ids, so we don't need to do it here
+        re_nvtx = nvtx.start_range(message="re", color="blue")
         batch_size, seq_length = input_ids.shape
         if past_key_values is None:
             cache_position = paddle.arange(input_ids.shape[1])
         else:
             cache_position = paddle.to_tensor([seq_length - 1])
+        paddle.device.synchronize()
 
+        
         if past_key_values is not None:
             input_ids = input_ids[:, -1].unsqueeze(-1)
 
@@ -1596,7 +1682,7 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel):
                 cache_position=cache_position,
                 batch_size=batch_size,
             )
-
+        se_nvtx = nvtx.start_range(message="se", color="blue")
         model_inputs.update(
             {
                 "position_ids": position_ids,  # [3, 1, 3602]
@@ -1610,4 +1696,9 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel):
                 "rope_deltas": rope_deltas,  # [[-3504]]
             }
         )
+        paddle.device.synchronize()
+        nvtx.end_range(se_nvtx)
+        nvtx.end_range(re_nvtx)
         return model_inputs
+    paddle.device.synchronize()
+    nvtx.end_range(key_nvtx)
